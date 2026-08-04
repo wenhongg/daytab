@@ -105,7 +105,10 @@ async function loadCounts() {
   try {
     const events = await fetchMergedEvents(
       rangeStart,
-      new Date(rangeStart.getFullYear(), rangeStart.getMonth() + 1, 1)
+      new Date(rangeStart.getFullYear(), rangeStart.getMonth() + 1, 1),
+      // Density dots only need start days — skip titles/descriptions, which
+      // at month scale is a lot of payload for nothing.
+      "items(start)"
     );
     if (seq !== loadSeq) return;
     // The user may have paged to a different month and back while this

@@ -58,11 +58,11 @@ async function resolveEnabled() {
 // Events across all enabled calendars for the range, each tagged with its
 // calendar's color. One failing calendar degrades quietly; only a total
 // failure (e.g. signed out) throws so callers can show the connect UX.
-export async function fetchMergedEvents(start, end) {
+export async function fetchMergedEvents(start, end, eventFields) {
   const enabled = await resolveEnabled();
   const results = await Promise.allSettled(
     enabled.map((cal) =>
-      fetchEventsForRange(cal.id, start, end).then((events) =>
+      fetchEventsForRange(cal.id, start, end, eventFields).then((events) =>
         events.map((event) => ({ ...event, calendarColor: cal.backgroundColor }))
       )
     )

@@ -473,9 +473,53 @@
   line-height: 1.4;
 }
 
+/* Title-as-disclosure-button for events with a description. Inline-block so
+   the click target hugs the text; time/location <p> siblings keep it on its
+   own line. */
+.event-toggle {
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: var(--sans);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.event-toggle::after {
+  content: " \25B8"; /* ▸ */
+  font-size: 0.7em;
+  color: var(--muted);
+}
+
+.event.expanded .event-toggle::after {
+  content: " \25BE"; /* ▾ */
+}
+
+.event-toggle:hover .event-title {
+  color: var(--accent);
+}
+
 .event-location {
   font-size: 0.85rem;
   color: var(--muted);
+}
+
+.event-details {
+  margin-top: 0.35rem;
+  font-size: 0.85rem;
+  line-height: 1.55;
+  color: var(--muted);
+  max-height: 12rem;
+  overflow-y: auto;
+  overflow-wrap: anywhere; /* long bare URLs must not widen the column */
+}
+
+/* Inside a text blob, plain underlined links beat the hover-glyph idiom. */
+.event-details a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 /* Reserve room so the badge never overlaps long titles or locations. */

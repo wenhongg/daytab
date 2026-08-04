@@ -96,17 +96,25 @@ export async function fetchCalendarList() {
   return data.items || [];
 }
 
+// Only what the agenda renders — full event resources (attendees, extended
+// properties, …) would bloat the persisted cache for nothing. Callers that
+// need even less (e.g. the month view's counts) pass a slimmer mask.
+const DEFAULT_EVENT_FIELDS = "items(id,summary,location,start,end,description)";
+
 // Events between two local-time Dates (start inclusive, end exclusive).
-export async function fetchEventsForRange(calendarId, start, end) {
+export async function fetchEventsForRange(
+  calendarId,
+  start,
+  end,
+  eventFields = DEFAULT_EVENT_FIELDS
+) {
   const params = new URLSearchParams({
     timeMin: rfc3339(start),
     timeMax: rfc3339(end),
     singleEvents: "true",
     orderBy: "startTime",
     maxResults: "250",
-    // Only what the views render — full event resources (attendees,
-    // descriptions, …) would bloat the persisted cache for nothing.
-    fields: "items(id,summary,location,start,end)",
+    fields: eventFields,
   });
   const data = await authorizedGet(
     `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events?${params}`

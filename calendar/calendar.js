@@ -6,6 +6,7 @@
 
 import { ApiError, clientIdConfigured, getToken } from "./api.js";
 import { fetchMergedEvents } from "./calendars.js";
+import { sanitizeDescription } from "./sanitize.js";
 import { localGet, localOnChanged, localSet } from "../shared/storage.js";
 import {
   addDays,
@@ -48,6 +49,9 @@ const emptyWeekCache = () => ({
 let viewDate = startOfDay(new Date());
 let weekSeq = 0; // guards against stale responses on rapid navigation
 let weekCache = emptyWeekCache();
+// Which events' descriptions are open, by event id — module scope so the
+// 60s re-render (and cross-tab sync) doesn't snap open panels shut.
+const expandedEventIds = new Set();
 
 function formatTime(date) {
   return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
@@ -131,6 +135,49 @@ function setAgendaStatus(message) {
   els.agendaStatus.classList.toggle("hidden", !message);
 }
 
+// Disclosure widget for an event with a description: appends the toggle
+// button (title + chevron) to `li` and returns the details panel for the
+// caller to place after the location line. Sanitizing is deferred until the
+// panel first opens, so collapsed rows cost nothing on the 60s re-render.
+function buildDisclosure(li, event, title, description, index) {
+  const expanded = expandedEventIds.has(event.id);
+  li.classList.toggle("expanded", expanded);
+
+  const toggle = document.createElement("button");
+  toggle.className = "event-toggle";
+  toggle.setAttribute("aria-expanded", String(expanded));
+  toggle.setAttribute("aria-controls", `event-details-${index}`);
+  const titleEl = document.createElement("span");
+  titleEl.className = "event-title";
+  titleEl.textContent = title;
+  toggle.appendChild(titleEl);
+  li.appendChild(toggle);
+
+  const details = document.createElement("div");
+  details.className = "event-details";
+  details.id = `event-details-${index}`;
+  details.classList.toggle("hidden", !expanded);
+  if (expanded) {
+    details.appendChild(sanitizeDescription(description));
+  }
+
+  toggle.addEventListener("click", () => {
+    const open = !details.classList.toggle("hidden");
+    if (open && !details.hasChildNodes()) {
+      details.appendChild(sanitizeDescription(description));
+    }
+    li.classList.toggle("expanded", open);
+    toggle.setAttribute("aria-expanded", String(open));
+    if (open) {
+      expandedEventIds.add(event.id);
+    } else {
+      expandedEventIds.delete(event.id);
+    }
+  });
+
+  return details;
+}
+
 function renderEvents(events) {
   els.eventList.textContent = "";
   if (events.length === 0) {
@@ -143,7 +190,7 @@ function renderEvents(events) {
   const timed = events.filter((e) => e.start?.dateTime);
   const now = new Date();
 
-  for (const event of [...allDay, ...timed]) {
+  for (const [index, event] of [...allDay, ...timed].entries()) {
     const li = document.createElement("li");
     li.className = "event";
 
@@ -177,9 +224,25 @@ function renderEvents(events) {
     } else {
       addLine("event-time", "All day");
     }
-    addLine("event-title", event.summary || "(No title)");
+    const title = event.summary || "(No title)";
+    // Storage is an external boundary (see isValidStored) — only trust a
+    // string description. Events without one stay plain, untoggleable rows.
+    const description =
+      typeof event.description === "string" && event.description.trim()
+        ? event.description
+        : null;
+
+    let details = null;
+    if (description) {
+      details = buildDisclosure(li, event, title, description, index);
+    } else {
+      addLine("event-title", title);
+    }
     if (event.location) {
       addLine("event-location", event.location);
+    }
+    if (details) {
+      li.appendChild(details);
     }
 
     els.eventList.appendChild(li);
@@ -219,6 +282,12 @@ function hydrateCache(stored) {
     counts: eventCountsByDay(stored.events),
     fetchedAt: new Date(stored.fetchedAt),
   };
+  // Forget expanded state for events that no longer exist (cancelled, or a
+  // different week) so the set can't grow unboundedly in a long-lived tab.
+  const ids = new Set(stored.events.map((event) => event.id));
+  for (const id of [...expandedEventIds]) {
+    if (!ids.has(id)) expandedEventIds.delete(id);
+  }
 }
 
 // `background` keeps whatever is on screen (cached events stay up, no
