@@ -5,6 +5,7 @@ import { getViewDate } from "../calendar/calendar.js";
 import { dateKey } from "../calendar/dates.js";
 import { fetchForecast, geocodeCity } from "./api.js";
 import { getCity, setCity } from "./store.js";
+import { localGet, localOnChanged, localSet } from "../shared/storage.js";
 
 const els = {
   line: document.getElementById("weather-line"),
@@ -18,10 +19,13 @@ const PERIODS = [
 ];
 const RAIN_THRESHOLD = 50; // percent
 const FORECAST_TTL_MS = 60 * 60 * 1000;
+const RETRY_INTERVAL_MS = 5 * 60 * 1000;
+const CACHE_KEY = "forecastCache";
 
 let city = null;
 let forecast = null; // { fetchedAt, time[], temperature[], precipProb[] }
 let forecastPromise = null; // dedupes concurrent fetches
+let readPromise = null; // dedupes concurrent storage reads
 let fetchSeq = 0;
 
 function clearLine() {
@@ -84,6 +88,13 @@ function summarizeDay(day) {
   return summary;
 }
 
+function appendSep() {
+  const sep = document.createElement("span");
+  sep.className = "sep";
+  sep.textContent = "·";
+  els.line.appendChild(sep);
+}
+
 function renderSummary(summary, day) {
   els.line.textContent = "";
   const cityName = document.createElement("span");
@@ -91,10 +102,7 @@ function renderSummary(summary, day) {
   cityName.textContent = city.name;
   els.line.appendChild(cityName);
   summary.forEach((period) => {
-    const sep = document.createElement("span");
-    sep.className = "sep";
-    sep.textContent = "·";
-    els.line.appendChild(sep);
+    appendSep();
     const seg = document.createElement("span");
     const rainy = period.rain >= RAIN_THRESHOLD;
     seg.className = rainy ? "seg-rain" : "";
@@ -117,6 +125,32 @@ function renderSetCity() {
     renderCityInput();
   });
   els.line.appendChild(btn);
+  els.line.classList.remove("hidden");
+  hideDateNote();
+}
+
+// Fetch failed with nothing usable to fall back on (e.g. rate-limited right
+// after a city switch) — say so instead of hiding the line, and offer a
+// manual retry alongside the timed one.
+function renderUnavailable() {
+  els.line.textContent = "";
+  const note = document.createElement("span");
+  note.textContent = "weather unavailable";
+  els.line.appendChild(note);
+  appendSep();
+
+  const btn = document.createElement("button");
+  btn.className = "text-btn weather-retry-btn";
+  btn.textContent = "retry";
+  btn.addEventListener("click", async (e) => {
+    e.stopPropagation(); // the line's own click handler opens the city input
+    btn.disabled = true;
+    btn.textContent = "retrying…";
+    await update(); // re-renders the line whichever way it ends
+  });
+  els.line.appendChild(btn);
+
+  els.line.title = "Click to change city";
   els.line.classList.remove("hidden");
   hideDateNote();
 }
@@ -164,10 +198,92 @@ function renderCityInput() {
   input.focus();
 }
 
-function ensureForecast() {
-  if (forecast && Date.now() - forecast.fetchedAt < FORECAST_TTL_MS) {
-    return Promise.resolve();
+function forecastIsFresh() {
+  return forecast && Date.now() - forecast.fetchedAt < FORECAST_TTL_MS;
+}
+
+// Storage is an external boundary — never assume a stored record's shape.
+// Element types matter, not just array-ness: summarizeDay indexes the four
+// arrays in lockstep and calls string/number methods on entries, so a
+// poisoned record would otherwise throw on every render for up to the TTL.
+// The length bound keeps spread-based Math.max within argument limits (a
+// real 16-day hourly forecast has 384 points).
+function isValidStored(stored) {
+  if (
+    !stored ||
+    typeof stored.latitude !== "number" ||
+    typeof stored.longitude !== "number" ||
+    typeof stored.fetchedAt !== "number" ||
+    !Array.isArray(stored.time) ||
+    stored.time.length > 800 ||
+    !stored.time.every((t) => typeof t === "string")
+  ) {
+    return false;
   }
+  return [stored.temperature, stored.precipProb, stored.weatherCode].every(
+    (arr) =>
+      Array.isArray(arr) &&
+      arr.length === stored.time.length &&
+      arr.every((n) => typeof n === "number")
+  );
+}
+
+// A cached forecast is only meaningful for the city it was fetched for.
+// (Coords round-trip losslessly through JSON, so === is safe; a false
+// mismatch would just cost one extra fetch.)
+function matchesCity(stored) {
+  return stored.latitude === city.latitude && stored.longitude === city.longitude;
+}
+
+function adoptStored(stored) {
+  forecast = {
+    fetchedAt: stored.fetchedAt,
+    time: stored.time,
+    temperature: stored.temperature,
+    precipProb: stored.precipProb,
+    weatherCode: stored.weatherCode,
+  };
+}
+
+// Adopt only records for the current city that are newer than what we hold
+// (our own write echoes back with an equal fetchedAt, filtered by the >).
+function shouldAdopt(stored) {
+  return (
+    isValidStored(stored) &&
+    Boolean(city) &&
+    matchesCity(stored) &&
+    (!forecast || stored.fetchedAt > forecast.fetchedAt)
+  );
+}
+
+function isEditingCity() {
+  return Boolean(els.line.querySelector("input"));
+}
+
+// Adopt the last persisted forecast (any tab's) if it beats what we hold.
+// Deduped like the fetch, so overlapping update() calls can't race it.
+function readStored() {
+  if (!readPromise) {
+    readPromise = localGet(CACHE_KEY, null)
+      .then((stored) => {
+        if (shouldAdopt(stored)) adoptStored(stored);
+      })
+      .catch(() => {})
+      .finally(() => {
+        readPromise = null;
+      });
+  }
+  return readPromise;
+}
+
+async function ensureForecast() {
+  if (forecastIsFresh()) return;
+  // Check storage before the network, every time: new tabs warm-start from
+  // another tab's fetch, and a tab whose retry raced a sibling's adopts the
+  // winner's write instead of piling on. Also lets a city switched back
+  // within the TTL reuse its cached forecast.
+  await readStored();
+  if (forecastIsFresh()) return;
   // One 16-day fetch covers every day the user can page to — rapid
   // navigation while it's in flight must not start duplicates.
   if (!forecastPromise) {
@@ -176,6 +292,13 @@ function ensureForecast() {
       .then((data) => {
         if (seq === fetchSeq) {
           forecast = { fetchedAt: Date.now(), ...data };
+          // Best-effort persist; other tabs adopt it via localOnChanged.
+          localSet(CACHE_KEY, {
+            latitude: city.latitude,
+            longitude: city.longitude,
+            fetchedAt: forecast.fetchedAt,
+            ...data,
+          }).catch(() => {});
         }
       })
       .finally(() => {
@@ -184,6 +307,18 @@ function ensureForecast() {
     forecastPromise = p;
   }
   return forecastPromise;
+}
+
+// Render whatever `forecast` currently holds for the viewed day — quietly
+// absent when nothing covers it (past days, >16 days out, no data at all).
+function renderFromForecast() {
+  if (!forecast) {
+    clearLine();
+    return;
+  }
+  const day = getViewDate();
+  const summary = summarizeDay(day);
+  summary ? renderSummary(summary, day) : clearLine();
 }
 
 async function update() {
@@ -196,13 +331,15 @@ async function update() {
   }
   try {
     await ensureForecast();
-    const day = getViewDate();
-    const summary = summarizeDay(day);
-    // Quietly absent for days the forecast can't cover.
-    summary ? renderSummary(summary, day) : clearLine();
   } catch {
-    clearLine(); // weather is a nicety — never surface errors on the page
+    // Fetch failed (network trouble, rate limit). With stale data on hand,
+    // fall through and render it — stale weather beats a vanished widget.
+    if (!forecast) {
+      renderUnavailable();
+      return;
+    }
   }
+  renderFromForecast();
 }
 
 // Clicking the rendered line re-opens the city input (ignore clicks on the
@@ -212,6 +349,28 @@ els.line.addEventListener("click", (e) => {
     renderCityInput();
   }
 });
+
+// Cross-tab sync: adopt another tab's fresher fetch for the same city.
+// Skip the re-render (not the adoption) while the city input is open.
+localOnChanged(CACHE_KEY, (stored) => {
+  if (!shouldAdopt(stored)) return;
+  adoptStored(stored);
+  if (!isEditingCity()) {
+    renderFromForecast();
+  }
+});
+
+// Revalidate once the forecast outlives its TTL in a long-lived tab, and
+// retry (bounded) after a failure like a 429 — once any tab succeeds, the
+// rest adopt its result via storage and stop. The per-tab jitter keeps tabs
+// that went stale in lockstep from retrying in lockstep too. Skips while
+// the city input is open so a background render can't clobber typing.
+// Known residual: tabs opened in a burst before any fetch has ever
+// succeeded each still fetch once.
+setInterval(() => {
+  if (!city || isEditingCity()) return;
+  if (!forecastIsFresh()) update();
+}, RETRY_INTERVAL_MS + Math.random() * 60 * 1000);
 
 document.addEventListener("viewdatechange", update);
 update();

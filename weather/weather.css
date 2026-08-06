@@ -34,9 +34,15 @@
   font-weight: 600;
 }
 
-.weather-set-btn {
+.weather-set-btn,
+.weather-retry-btn {
   font-size: 0.75rem;
   letter-spacing: 0.08em;
+}
+
+.weather-retry-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .weather-input {
