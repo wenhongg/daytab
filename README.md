@@ -4,9 +4,9 @@ A calm Chrome new-tab page: your Google Calendar day, a to-do list, a
 scratchpad, and the day's weather — on paper and bronze, with nothing
 fighting for your attention.
 
-![Day Tab — day view with week strip, weather, to-dos and scratchpad](store/screenshot-day-view.png)
+![Day Tab — day view with week strip, weather, to-dos and scratchpad](docs/store/screenshot-day-view.png)
 
-![Day Tab — month overlay with event-density dots](store/screenshot-month-overlay.png)
+![Day Tab — month overlay with event-density dots](docs/store/screenshot-month-overlay.png)
 
 ## Who it's for
 
@@ -61,7 +61,7 @@ git clone https://github.com/wenhongg/daytab.git
 
 1. Open `chrome://extensions` in Chrome.
 2. Turn on **Developer mode** (toggle, top right).
-3. Click **Load unpacked** and select the cloned `daytab` folder.
+3. Click **Load unpacked** and select the cloned repo's `src/` folder.
 4. Open a new tab — the to-do list, scratchpad, and weather (after typing a
    city) work immediately.
 5. Click **Connect Google Calendar** — no OAuth setup needed. The
@@ -71,14 +71,17 @@ git clone https://github.com/wenhongg/daytab.git
 
 ## Structure
 
-Vanilla JS ES modules, no build step. One folder per feature:
+Vanilla JS ES modules, no build step. `src/` is exactly what ships in the
+zip (pack.sh); `docs/` is the website published via GitHub Pages. One
+folder per feature inside `src/`:
 
 ```
-calendar/   day view, week strip, month overlay, Google Calendar API
-todo/       checklist (chrome.storage.sync)
-scratchpad/ autosaving notes (chrome.storage.sync)
-weather/    Open-Meteo forecast line
-shared/     storage helpers
+src/calendar/   day view, week strip, month overlay, Google Calendar API
+src/todo/       checklist (chrome.storage.sync)
+src/scratchpad/ autosaving notes (chrome.storage.sync)
+src/weather/    Open-Meteo forecast line
+src/shared/     storage helpers
+docs/           daytab.wenhongl.com — landing, privacy, terms
 ```
 
 ## Privacy

@@ -1,0 +1,260 @@
+# Ship a release to the Chrome Web Store.
+#
+# Normal path: Actions > Release > "Run workflow" — pick a bump type (or type
+# an exact version) and CI does everything: bump src/manifest.json, commit,
+# tag, push main, fast-forward release, pack, upload, publish.
+#
+# The push trigger stays as an escape hatch: promoting main to release by
+# hand still publishes. (Pushes made here with GITHUB_TOKEN do NOT trigger
+# workflows, so the release push below can't re-enter this workflow.)
+#
+# One-time setup (see https://developer.chrome.com/docs/webstore/using-api):
+#   1. Google Cloud Console: create a project, enable "Chrome Web Store API",
+#      create an OAuth client of type "Desktop app".
+#   2. Run the consent flow once with the store-owner account (scope
+#      https://www.googleapis.com/auth/chromewebstore, access_type=offline,
+#      prompt=consent) and exchange the code for a refresh token.
+#   3. Repo secrets: CWS_CLIENT_ID, CWS_CLIENT_SECRET, CWS_REFRESH_TOKEN,
+#      CWS_ITEM_ID (the extension's ID from the developer dashboard).
+#
+# Publishing still goes through the normal store review before going live.
+
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump (ignored if an exact version is given)"
+        type: choice
+        options: [minor, patch, major]
+        default: minor
+      version:
+        description: "Exact version, e.g. 2.0 (optional)"
+        type: string
+        required: false
+  push:
+    branches: [release] # manual promotion still publishes
+
+permissions:
+  contents: write # bump commit, tag, and the release fast-forward
+  checks: read # so we can refuse to ship a red main
+
+concurrency:
+  group: release # never let two releases interleave
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      # Pinned by SHA, not tag: this job has contents:write and handles store
+      # credentials, so a repointed tag would be a real supply-chain risk.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # Default GITHUB_TOKEN credentials on purpose — pushes made with it
+          # don't trigger workflows, which is what stops the release push
+          # below from re-entering this workflow. Swapping in a PAT or App
+          # token would break that and cause a double publish.
+          fetch-depth: 0 # need history to push main and fast-forward release
+
+      # Releasing from anything but main would tag and promote the wrong tree.
+      - name: Require main
+        if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Run this from main (branch picker in the Run workflow dialog)."
+          exit 1
+
+      # Clicking Run twice, or running with nothing merged since the last
+      # release, would otherwise burn a version number on an identical tree.
+      - name: Require something to release
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          # fetch-depth: 0 already fetched every branch, so a missing
+          # origin/release means the branch doesn't exist yet. No network
+          # call here — a flaky fetch must never silently skip this guard.
+          if ! git rev-parse -q --verify origin/release >/dev/null; then
+            echo "No release branch yet — first release, continuing."
+            exit 0
+          fi
+          if [ "$(git rev-parse origin/release)" = "$(git rev-parse HEAD)" ]; then
+            echo "::error::release already points at this commit — nothing new to ship."
+            exit 1
+          fi
+          echo "Shipping $(git rev-list --count origin/release..HEAD) commit(s)." >> "$GITHUB_STEP_SUMMARY"
+
+      # Only definitive failures block: in-progress runs (including this one)
+      # have a null conclusion, and a repo with no checks yields nothing.
+      - name: Require a green main
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+        run: |
+          # A failed query must fail the release, not read as "all green" —
+          # so capture stderr and check the exit status rather than
+          # swallowing it. --paginate covers commits with >30 checks.
+          if ! BAD=$(gh api --paginate "repos/$GITHUB_REPOSITORY/commits/$SHA/check-runs" \
+            --jq '[.check_runs[]
+                   | select(.conclusion == "failure" or .conclusion == "cancelled"
+                            or .conclusion == "timed_out" or .conclusion == "action_required")
+                   | .name] | join(", ")' 2>&1); then
+            echo "::error::couldn't read check runs for $SHA: $BAD"
+            exit 1
+          fi
+          BAD=$(echo "$BAD" | tr -d '\n' | sed 's/^,*//; s/,*$//')
+          if [ -n "$BAD" ]; then
+            echo "::error::main is not green — failing checks: $BAD"
+            exit 1
+          fi
+
+      - name: Work out the next version
+        if: github.event_name == 'workflow_dispatch'
+        id: version
+        env:
+          # Inputs go through env, never inline into the script.
+          BUMP: ${{ inputs.bump }}
+          EXACT: ${{ inputs.version }}
+        run: |
+          # 2>&1 so a validation failure's message (written to stderr by
+          # sys.exit) lands in $NEXT and reaches the ::error:: annotation.
+          NEXT=$(python3 - 2>&1 <<'PY'
+          import json, os, re, sys
+
+          current = json.load(open("src/manifest.json"))["version"]
+          exact = os.environ.get("EXACT", "").strip()
+
+          if exact:
+              nxt = exact
+          else:
+              # Chrome versions are 1-4 dot-separated integers; treat missing
+              # trailing parts as 0 so "1.0" can take a patch bump.
+              parts = [int(p) for p in current.split(".")]
+              major, minor, patch = (parts + [0, 0, 0])[:3]
+              bump = os.environ["BUMP"]
+              if bump == "major":
+                  nxt = f"{major + 1}.0"
+              elif bump == "minor":
+                  nxt = f"{major}.{minor + 1}"
+              else:
+                  nxt = f"{major}.{minor}.{patch + 1}"
+
+          if not re.fullmatch(r"[0-9]+(\.[0-9]+){0,3}", nxt):
+              sys.exit(f"'{nxt}' is not a valid extension version")
+          key = lambda v: [int(p) for p in v.split(".")]
+          if key(nxt) <= key(current):
+              sys.exit(f"{nxt} must be greater than the current {current}")
+          print(nxt)
+          PY
+          ) || { echo "::error::$NEXT"; exit 1; }
+          echo "version=$NEXT" >> "$GITHUB_OUTPUT"
+          echo "Releasing $NEXT" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Bump, commit, tag, promote
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null &&
+            { echo "::error::tag v$VERSION already exists"; exit 1; }
+
+          python3 - "$VERSION" <<'PY'
+          import json, sys
+          with open("src/manifest.json") as f:
+              manifest = json.load(f)
+          manifest["version"] = sys.argv[1]
+          with open("src/manifest.json", "w") as f:
+              json.dump(manifest, f, indent=2)
+              f.write("\n")
+          PY
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/manifest.json
+          git commit -m "Release $VERSION"
+          git push origin HEAD:main
+
+          # Tag only after main lands, so a rejected push leaves nothing behind.
+          git tag "v$VERSION"
+          git push origin "v$VERSION"
+
+          # Fast-forward only: a rejection means release has commits main
+          # doesn't, which should never happen — investigate, don't force.
+          git push origin HEAD:release
+
+      # Manual promotions skip the steps above, so re-check here: the store
+      # rejects a re-upload of a version it already has.
+      - name: Require a version bump
+        if: github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000'
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          # The || catches pushes from before src/ existed (file not at that
+          # path in the old tip) — treat as "no previous version", let it pass.
+          OLD=$(git show "$BEFORE_SHA:src/manifest.json" 2>/dev/null | jq -r .version 2>/dev/null || echo "none")
+          NEW=$(jq -r .version src/manifest.json)
+          echo "release branch: $OLD -> $NEW"
+          if [ "$OLD" = "$NEW" ]; then
+            echo "::error::manifest.json version is still $NEW — bump it before promoting."
+            exit 1
+          fi
+
+      - name: Build release.zip
+        run: ./pack.sh
+
+      - name: Upload and publish
+        env:
+          CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.CWS_CLIENT_SECRET }}
+          REFRESH_TOKEN: ${{ secrets.CWS_REFRESH_TOKEN }}
+          ITEM_ID: ${{ secrets.CWS_ITEM_ID }}
+        run: |
+          set -euo pipefail
+
+          fail() { echo "::error::$1"; exit 1; }
+          as_json() { echo "$1" | jq -e . > /dev/null 2>&1; }
+
+          RESP=$(curl -sS --retry 3 https://oauth2.googleapis.com/token \
+            -d client_id="$CLIENT_ID" \
+            -d client_secret="$CLIENT_SECRET" \
+            -d refresh_token="$REFRESH_TOKEN" \
+            -d grant_type=refresh_token)
+          as_json "$RESP" || fail "non-JSON token response"
+          TOKEN=$(echo "$RESP" | jq -r '.access_token // empty')
+          if [ -z "$TOKEN" ]; then
+            # Error bodies carry no secrets (e.g. invalid_grant on a revoked
+            # refresh token) — echo them, they're the whole diagnosis.
+            fail "token refresh failed: $(echo "$RESP" | jq -c 'del(.access_token)')"
+          fi
+          # secrets.* are auto-masked in logs; this derived value is not.
+          echo "::add-mask::$TOKEN"
+
+          UPLOAD=$(curl -sS --retry 3 -H "Authorization: Bearer $TOKEN" \
+            -X PUT -T release.zip \
+            "https://www.googleapis.com/upload/chromewebstore/v1.1/items/$ITEM_ID")
+          echo "upload: $UPLOAD"
+          as_json "$UPLOAD" || fail "non-JSON upload response"
+          STATE=$(echo "$UPLOAD" | jq -r '.uploadState // empty')
+
+          # The store processes uploads asynchronously — publishing before it
+          # settles races the not-yet-registered version. Poll up to 5 min.
+          POLLS=0
+          while [ "$STATE" = "IN_PROGRESS" ] && [ "$POLLS" -lt 30 ]; do
+            sleep 10
+            ITEM=$(curl -sS --retry 3 -H "Authorization: Bearer $TOKEN" \
+              "https://www.googleapis.com/chromewebstore/v1.1/items/$ITEM_ID?projection=DRAFT")
+            as_json "$ITEM" || fail "non-JSON status response"
+            STATE=$(echo "$ITEM" | jq -r '.uploadState // empty')
+            POLLS=$((POLLS + 1))
+            echo "upload state: ${STATE:-unknown} (poll $POLLS)"
+          done
+          [ "$STATE" = "SUCCESS" ] || fail "upload did not succeed (state: ${STATE:-unknown})"
+
+          PUBLISH=$(curl -sS --retry 3 -H "Authorization: Bearer $TOKEN" \
+            -X POST -d '' \
+            "https://www.googleapis.com/chromewebstore/v1.1/items/$ITEM_ID/publish")
+          echo "publish: $PUBLISH"
+          as_json "$PUBLISH" || fail "non-JSON publish response"
+          echo "$PUBLISH" | jq -e '.status | index("OK")' > /dev/null || fail "publish was not accepted"
+          echo "Submitted for store review." >> "$GITHUB_STEP_SUMMARY"

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Build release.zip for the Chrome Web Store.
+# Build release.zip for the Chrome Web Store from src/ (the zip's exact
+# contents — keep anything that shouldn't ship out of that folder).
 #
 # - Strips the "key" field from manifest.json (the store rejects it; it only
 #   pins the ID during unpacked development).
@@ -15,13 +16,19 @@ KEY_FILE="$HOME/projects/newtab-key.pem"
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 
-# Allowlist on purpose (never ship stray dev files) — UPDATE THIS LIST when
-# adding a top-level module folder or asset, or the release will omit it.
-cp -R newtab.html styles.css icons calendar todo scratchpad weather shared "$STAGE/"
+cp -R src/. "$STAGE/"
+
+# src/ is read straight off disk (not via git), so .gitignore can't protect
+# this path — scrub OS/editor droppings and refuse to ship stray keys.
+find "$STAGE" -name ".*" -type f -delete
+if find "$STAGE" \( -iname "*.pem" -o -iname "*.key" \) | grep -q .; then
+  echo "error: key material found in src/ — refusing to pack" >&2
+  exit 1
+fi
 
 python3 - "$STAGE/manifest.json" <<'EOF'
 import json, sys
-with open("manifest.json") as f:
+with open(sys.argv[1]) as f:
     manifest = json.load(f)
 manifest.pop("key", None)
 with open(sys.argv[1], "w") as f:

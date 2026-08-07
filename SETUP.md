@@ -12,7 +12,7 @@ verification).
 ## 1. Load the extension
 
 1. Open `chrome://extensions`, turn on **Developer mode** (top right).
-2. Click **Load unpacked** and select this folder.
+2. Click **Load unpacked** and select this repo's `src/` folder.
 3. The extension ID should be `iobkbdlnjeijdpnokfgolaijmfffkdjo` — it is pinned by
    the `key` field in `manifest.json`, so it stays the same even if you move or
    re-clone this folder. Verify it matches on the extension card.
@@ -35,7 +35,7 @@ verification).
 
 ## 3. Configure the extension
 
-1. In `manifest.json`, replace the `oauth2.client_id` value with your own
+1. In `src/manifest.json`, replace the `oauth2.client_id` value with your own
    client ID. (The one shipped in this repo belongs to the published
    Chrome Web Store build and only works with its extension ID.)
 2. Back on `chrome://extensions`, click the reload icon on the extension.
