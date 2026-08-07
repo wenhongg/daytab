@@ -8,3 +8,6 @@ release.zip
 
 # macOS
 .DS_Store
+
+# Local secrets (CWS publishing credentials)
+.env
