@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Day Tab",
   "description": "A calm new tab with your Google Calendar, to-dos, a scratchpad, and the weather. Only what you need to anchor your day.",
-  "version": "1.1",
+  "version": "1.2",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAt30lXuGQeNZXaY7AoB6uo/UANAcbsfK/VgsrwW1Lwh+EvT/dhf/akR+tFe39Pc9HnBOHZ/jNezAYE/xTPNFyg8wSQ9xGOvlyz9V/B3olBi8co/YWue+JO+cpa21oXmgsFhCBslJY+w3UumoNpNvgP6YT9LNDSuvdEIncYvYUWGnByDNJ+F/rPWi3Q50r/6AzyI2xRIgki1YVMN8haHnkUnfdAG2taqeizHnHiMNauepp2e8oS8a3FuRHWPZY9Tzwe7wgj/7tSI3rqlEsnEO8xqYIMvR8HrGlY0kGoKoJnTSZ14AIHYv6PPIbzVgo2GmCgoaDb+8PFJEUxqdcfBXjNQIDAQAB",
   "icons": {
     "16": "icons/icon16.png",
@@ -12,8 +12,13 @@
   "chrome_url_overrides": {
     "newtab": "newtab.html"
   },
-  "permissions": ["identity", "storage"],
-  "host_permissions": ["https://www.googleapis.com/*"],
+  "permissions": [
+    "identity",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://www.googleapis.com/*"
+  ],
   "oauth2": {
     "client_id": "749225906117-iffcvehpjf3a1nj87300dat959n2d7qn.apps.googleusercontent.com",
     "scopes": [
